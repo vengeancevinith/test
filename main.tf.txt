@@ -1,0 +1,122 @@
+import json
+import time
+import consonants as constant
+import datetime
+import io
+import requests
+import boto3
+import pandas as pd
+import numpy as np
+from io import BytesIO
+from io import StringIO
+from json import dumps
+client = boto3.client('ssm')
+sns = boto3.client("sns", region_name="us-east-2")
+ssm = boto3.client("ssm", region_name="us-east-2")
+s3_resource = boto3.resource('s3')
+url = ssm.get_parameter(Name=constant.urlapi, WithDecryption=True)["Parameter"]["Value"]
+my_headers = {'x-apikey-token' : 'YV5iYWWji13z25LX/ZAQOwmHKmHqdpQk8pQzIcSQ5hGl3cpog'}
+#file = [line.strip() for line in url]
+#print(file)
+bucket = 'tripelrouput' # already created on S3
+s3_prefix = "result1/csvfiles"
+s3_prefix1= "result/parquetfiles"
+def get_datetime():
+    dt = datetime.datetime.now()
+    return dt.strftime("%Y%m%d"), dt.strftime("%H:%M:%S")
+datestr, timestr = get_datetime()
+fname = f"data_api_tripler_{datestr}_{timestr}.csv"
+fname1= f"data_api_tripler_{datestr}_{timestr}.parquet"
+file_prefix = "/".join([s3_prefix, fname])
+file_prefix1= "/".join([s3_prefix1,fname1])
+def send_sns_success():
+    success_sns_arn = ssm.get_parameter(Name=constant.SUCCESSNOTIFICATIONARN, WithDecryption=True)["Parameter"]["Value"]
+    component_name = constant.COMPONENT_NAME
+    env = ssm.get_parameter(Name=constant.ENVIRONMENT, 
+	WithDecryption=True)['Parameter']['Value']
+    success_msg = constant.SUCCESS_MSG
+    sns_message = (f"{component_name} :  {success_msg}")
+    print(sns_message, 'text')
+    succ_response = sns.publish(TargetArn=success_sns_arn,Message=json.dumps({'default': json.dumps(sns_message)}),
+        Subject= env + " : " + component_name,MessageStructure="json")
+    return succ_response
+    
+def send_error_sns():
+   
+    error_sns_arn = ssm.get_parameter(Name=constant.ERRORNOTIFICATIONARN)["Parameter"]["Value"]
+    env = ssm.get_parameter(Name=constant.ENVIRONMENT, WithDecryption=True)['Parameter']['Value']
+    error_message=constant.ERROR_MSG
+    component_name = constant.COMPONENT_NAME
+    sns_message = (f"{component_name} : {error_message}")
+    err_response = sns.publish(TargetArn=error_sns_arn,Message=json.dumps({'default': json.dumps(sns_message)}),    Subject=env + " : " + component_name,
+        MessageStructure="json")
+		    return err_response
+    
+def reshape(r):
+    dt=r["data"]
+    at = dt[0]["attributes"]
+    res = {
+        "Type": dt[0]['type'],
+        "id":dt[0]["id"],
+        "UserFirstname":at['userfirstname'],
+        "userLastname":at['userlastname'],
+        "useremailaddress":at['useremailaddress'],
+        "useractiveflag":at['useractiveflag'],
+        "userdeleteddate":at['userdeleteddate'],
+        "senttimestamp":at['senttimestamp'],
+        "eventtimestamp":at['eventtimestamp'],
+        "eventtype":at['eventtype'],
+        "campaignname":at['campaignname'],
+        "autoenrollment":at['autoenrollment'],
+        "campaignstartdate":at['campaignstartdate'],
+        "campaignenddate":at['campaignenddate'],
+        "campaigntype":at['campaigntype'],
+        "campaignstatus":at['campaignstatus'],
+        "templatename":at['templatename'],
+        "templatesubject":at['templatesubject'],
+        "assessmentisarchived":at['assessmentisarchived'],
+        "usertags":at['usertags'],
+        "sso_id":at['sso_id']
+    }
+    return res
+
+def lambda_handler(event, context):
+    """
+    """
+    outputStatus = 0 ## Success=1 , Failed=0
+    errorMessage = ''
+    responses = []
+    try:
+        r = requests.get(url,headers=my_headers)
+        while r.status_code == 404:
+            print("The URL is not hit")
+            time.sleep(300)
+        if r.status_code != 404:
+            print("the URl is HIT ")
+        responses.append(reshape(r.json()))
+        serialized = []
+        for r in responses:
+            serialized.append(json.dumps(r))
+        jsonlines_doc = "\n".join(serialized)
+        df = pd.read_json(jsonlines_doc, lines=True)
+        print(df)
+        f = io.BytesIO()
+        csv_buffer = StringIO()
+        #df.to_parquet(f)
+        df.to_csv(csv_buffer)
+        s3_resource.Object(bucket, file_prefix).put(Body=csv_buffer.getvalue())
+        print("CSV File Written")
+        #s3_resource.Object(bucket, file_prefix1).put(Body=out_buffer.getvalue())
+        print("parquetfileswritten")
+
+        
+    except :
+        outputStatus = 0 ## Success=1 , Failed=0
+        errorMessage = "Error" 
+        send_error_sns()
+        
+    return {
+        'Status'        :   outputStatus,
+        'errorMessage'   :  error
+Message
+        }
